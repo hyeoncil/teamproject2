@@ -2,7 +2,76 @@ import java.io.File
 import kotlin.random.Random
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import java.util.UUID
 
+data class Egg(
+    val id: String,
+    val item: Item,
+    val createdAtMillis: Long,
+    val hatchAtMillis: Long
+)
+
+class StepEggManager(
+    private val gachaManager: GachaManager,
+    private val stepsPerEgg: Long = 1_000L,
+    private val hatchHours: Map<Rarity, Long> = mapOf(
+        Rarity.SSR_PILGRIM to 8L,
+        Rarity.SSR_NORMAL to 4L,
+        Rarity.SR to 2L,
+        Rarity.N to 1L
+    )
+) {
+    private var lastSteps = 0L
+    private var stepRemainder = 0L
+
+    // 아직 부화하지 않은 알
+    private val eggs = mutableListOf<Egg>()
+
+    fun updateSteps(totalSteps: Long, nowMillis: Long = System.currentTimeMillis()): List<Egg> {
+        require(totalSteps >= 0) { "걸음 수는 음수일 수 없습니다." }
+
+        // 걸음 수가 초기화되거나 줄어든 경우, 중복 지급을 막기 위해 기준만 갱신합니다.
+        if (totalSteps < lastSteps) {
+            lastSteps = totalSteps
+            return emptyList()
+        }
+
+        val gainedSteps = totalSteps - lastSteps
+        lastSteps = totalSteps
+        stepRemainder += gainedSteps
+
+        val newEggs = mutableListOf<Egg>()
+
+        while (stepRemainder >= stepsPerEgg) {
+            stepRemainder -= stepsPerEgg
+
+            // 기존 뽑기 로직과 희귀도 확률·천장을 그대로 사용합니다.
+            val item = gachaManager.drawOne()
+            val hours = hatchHours[item.rarity]
+                ?: error("${item.rarity}의 부화 시간이 설정되지 않았습니다.")
+
+            val egg = Egg(
+                id = UUID.randomUUID().toString(),
+                item = item,
+                createdAtMillis = nowMillis,
+                hatchAtMillis = nowMillis + hours * 60 * 60 * 1_000L
+            )
+
+            eggs += egg
+            newEggs += egg
+        }
+
+        return newEggs
+    }
+
+    fun hatchReady(nowMillis: Long = System.currentTimeMillis()): List<Item> {
+        val readyEggs = eggs.filter { it.hatchAtMillis <= nowMillis }
+        eggs.removeAll(readyEggs.toSet())
+        return readyEggs.map { it.item }
+    }
+
+    fun getPendingEggs(): List<Egg> = eggs.toList()
+}
 // 1. 등급 정의 (val baseRate: Double 선언이 들어가야 baseRate와 SSR_PILGRIM/NORMAL 에러가 안 난다)
 enum class Rarity(val baseRate: Double) {
     SSR_PILGRIM(0.3), // 필그림급 5성
@@ -93,19 +162,16 @@ fun loadItemPoolFromFile(filePath: String = "assets/items.json"): Map<Rarity, Li
 
 // 5. 실행 메인 함수
 fun main() {
-    println("=== 가챠 데이터 로딩 중 ===")
-    val itemPool = loadItemPoolFromFile("assets/items.json")
+    val eggManager = StepEggManager(gachaManager)
 
-    if (itemPool.isEmpty()) {
-        println("아이템 풀이 비어있어 실행을 중단합니다.")
-        return
-    }
+// 실제 앱의 만보기/API에서 읽은 누적 걸음 수로 교체하세요.
+val totalStepsFromExternalSource = 2_450L
 
-    val gachaManager = GachaManager(itemPool)
+val newEggs = eggManager.updateSteps(totalStepsFromExternalSource)
+println("새로 얻은 알: ${newEggs.size}개")
 
-    println("\n=== 10연차 뽑기 실행 ===")
-    val results = gachaManager.drawTen()
-    results.forEachIndexed { index, item ->
-        println("${index + 1}번째: [${item.rarity}] ${item.name}")
-    }
+val hatchedItems = eggManager.hatchReady()
+hatchedItems.forEach { item ->
+    println("부화 완료: [${item.rarity}] ${item.name}")
+}
 }
